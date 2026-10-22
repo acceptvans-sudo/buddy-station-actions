@@ -30,7 +30,7 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: 定位 Python 解释器（不硬编码版本号）
         id: py
@@ -49,13 +49,20 @@ jobs:
           fi
           echo "解释器路径：$PY"
           "$PY" -c 'import sys; assert sys.version_info >= (3,8), "需要 Python 3.8+"; print("版本检查通过：" + sys.version.split()[0])'
+          # 写入 GITHUB_ENV 供后续步骤以 ${{ env.PYTHON_BIN }} 读取
           echo "PYTHON_BIN=$PY" >> "$GITHUB_ENV"
 
       - name: 执行签到与派猫猫（失败隔离）
         id: run
         run: |
           set -uo pipefail
-          "${{ steps.py.outputs.PYTHON_BIN }}" scripts/buddy_station.py | tee run.log
+          PY="${PYTHON_BIN:-}"
+          if [ -z "$PY" ]; then
+            echo "::error::未取到 Python 解释器路径（GITHUB_ENV 未生效）"
+            echo "exit_code=127" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          "$PY" scripts/buddy_station.py | tee run.log
           code=${PIPESTATUS[0]}
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           echo "结论：退出码 $code（0=成功含幂等，1=签到失败，2=凭据问题）"
@@ -63,7 +70,7 @@ jobs:
 
       - name: 上传运行报告
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: buddy-station-report-${{ github.run_id }}
           path: run.log
