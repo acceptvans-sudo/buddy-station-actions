@@ -87,6 +87,24 @@ def mask_token(t):
     return "%s...%s (len=%d)" % (t[:6], t[-4:], len(t))
 
 
+def sanitize_value(v):
+    """清洗从 GitHub Secret 读入的凭据。
+
+    Secret 的值常在手工粘贴时带入换行/空格/CR/BOM：
+      · 放进 HTTP 请求头会让 http.client 抛 "Invalid header value"；
+      · 放进 URL 会让飞书返回 19001（token invalid）。
+    这里统一做：去 BOM → 去全部空白 → 字符集白名单过滤。
+
+    白名单保留了 URL 所需的 : ? & = 与 base64 的 - _ ~ + / =，
+    因此同一个函数可安全用于令牌与 webhook。
+    """
+    if not v:
+        return ""
+    v = v.replace("﻿", "")
+    v = "".join(v.split())
+    return "".join(ch for ch in v if ch.isalnum() or ch in "-_.~+/=:?&")
+
+
 def http_json(url, token=None, method="GET", payload=None, extra_headers=None,
               timeout=HTTP_TIMEOUT):
     """统一 HTTP 调用。返回 (status_code, parsed_body)。
@@ -135,18 +153,8 @@ def acquire_access_token():
     返回 (token, source_desc)。失败抛 RuntimeError。
     令牌不写入任何输出，仅返回给调用方在内存中使用。
     """
-    #关键：Secret 常常在粘贴时带入换行/空格/CR，http.client 会因
-    # 请求头含非法字符抛 "Invalid header value"。这里做一次彻底清洗，
-    # 只保留令牌本体的合法字符，粘贴时产生的杂质一律剔除。
-    def sanitize(v):
-        # 去BOM 与各类空白字符（含内部换行/制表/不换行空格/中文全角空格）
-        v = v.replace("﻿", "")
-        v = "".join(v.split())
-        # 仅保留 base64url / JWT 允许的字符集
-        return "".join(ch for ch in v if ch.isalnum() or ch in "-_.~+/=")
-
-    refresh_token = sanitize(os.environ.get("WB_REFRESH_TOKEN", ""))
-    fallback_token = sanitize(os.environ.get("WB_ACCESS_TOKEN", ""))
+    refresh_token = sanitize_value(os.environ.get("WB_REFRESH_TOKEN", ""))
+    fallback_token = sanitize_value(os.environ.get("WB_ACCESS_TOKEN", ""))
 
     if not refresh_token and not fallback_token:
         raise RuntimeError(
@@ -453,11 +461,13 @@ def build_card(report):
 
 def push_feishu(report):
     """推送飞书。未配置 webhook 则跳过。返回 (status, detail)。"""
-    webhook = os.environ.get("FEISHU_WEBHOOK", "").strip()
+    # 同样做彻底清洗：webhook 复制时也可能带入换行/空格，
+    # 与 Secret 粘贴是同一类问题，不清洗会得到 19001 token invalid。
+    webhook = sanitize_value(os.environ.get("FEISHU_WEBHOOK", ""))
     if not webhook:
         return "skipped", "未配置 FEISHU_WEBHOOK，跳过推送"
 
-    secret = os.environ.get("FEISHU_SECRET", "").strip()
+    secret = sanitize_value(os.environ.get("FEISHU_SECRET", ""))
     if secret:
         ts = str(int(time.time()))
         webhook = "%s%s&timestamp=%s&sign=%s" % (
