@@ -234,7 +234,11 @@ def do_checkin(token):
         return {"result": "skipped",
                 "message": "今日已签到，无需重复签到",
                 "credits": data.get("total_credits"),
-                "streak": data.get("streak_days")}
+                "streak": data.get("streak_days"),
+                "today_credit": data.get("today_credit"),
+                "daily_credit": data.get("daily_credit"),
+                "theme_name": data.get("theme_name"),
+                "next_streak_day": data.get("next_streak_day")}
 
     status, body = http_json(BILLING_BASE + CHECKIN_PATH, token, "POST", {})
     code = body.get("code") if isinstance(body, dict) else None
@@ -418,6 +422,15 @@ def build_card(report):
         "· 积分余额：%s" % (ci.get("credits") if ci.get("credits") is not None else "—"),
         "· 连续签到：%s 天" % (ci.get("streak") if ci.get("streak") is not None else "—"),
     ]
+    # 补充接口已返回但默认未展示的字段（均为实时值，非硬编码）
+    if ci.get("today_credit") is not None:
+        lines_ci.append("· 今日可得：%s 积分" % ci["today_credit"])
+    if ci.get("daily_credit") is not None:
+        lines_ci.append("· 每日可得：%s 积分" % ci["daily_credit"])
+    if ci.get("theme_name"):
+        lines_ci.append("· 活动：%s" % ci["theme_name"])
+    if ci.get("next_streak_day"):
+        lines_ci.append("· 下一个连续奖励：%s 天" % ci["next_streak_day"])
 
     if tv.get("available"):
         tv_title = "🐱 猫猫旅行（%s）" % (tv.get("state_text") or "状态未知")
@@ -533,12 +546,24 @@ def main():
     report["checkin"] = do_checkin(token)
     print("[签到] %s —— %s" % (report["checkin"]["result"], report["checkin"]["message"]))
 
-    # 补齐积分/连签展示（签到写接口不回传时从状态查询取）
-    if report["checkin"].get("credits") is None:
+    # 补齐展示字段（签到写接口不回传余额等数据，统一从状态查询取实时值）
+    # 只查一次：一次性补齐所有展示字段
+    need = ("credits", "streak", "today_credit", "daily_credit",
+            "theme_name", "next_streak_day")
+    if any(report["checkin"].get(k) is None for k in need):
         ok, data = fetch_status(token)
         if ok:
-            report["checkin"]["credits"] = data.get("total_credits")
-            report["checkin"]["streak"] = data.get("streak_days")
+            mapping = {
+                "credits": "total_credits",
+                "streak": "streak_days",
+                "today_credit": "today_credit",
+                "daily_credit": "daily_credit",
+                "theme_name": "theme_name",
+                "next_streak_day": "next_streak_day",
+            }
+            for k, src in mapping.items():
+                if report["checkin"].get(k) is None:
+                    report["checkin"][k] = data.get(src)
 
     # ---- 2. 派猫猫旅行（失败隔离，绝不影响签到结论）----
     try:
