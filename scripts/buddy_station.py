@@ -386,10 +386,17 @@ def fmt_duration(seconds):
 # ============================================================================
 
 def feishu_sign(secret, timestamp):
-    """飞书加签：base64(hmac_sha256(secret, f"{timestamp}\\n{secret}"))，时间戳为秒。"""
+    """飞书加签：base64(hmac_sha256(key=string_to_sign, msg=空))。
+
+    string_to_sign = f"{timestamp}\\n{secret}"，timestamp 为秒。
+
+    注意：飞书的 HMAC 方向与钉钉/企业微信相反——这里「待签字符串」是
+    **key**，消息体为空。写成 key=secret / msg=string_to_sign 会得到
+    19021（sign match fail），此实现已用真实 webhook 实测通过（code=0）。
+    """
     string_to_sign = ("%s\n%s" % (timestamp, secret)).encode("utf-8")
     return base64.b64encode(
-        hmac.new(secret.encode("utf-8"), string_to_sign, digestmod=hashlib.sha256).digest()
+        hmac.new(string_to_sign, b"", digestmod=hashlib.sha256).digest()
     ).decode("utf-8")
 
 
@@ -469,11 +476,15 @@ def push_feishu(report):
 
     secret = sanitize_value(os.environ.get("FEISHU_SECRET", ""))
     if secret:
+        # 飞书加签：把 timestamp / sign 作为 query 参数追加。
+        # 用 urllib.parse 构造而非手工字符串拼接——手工拼 '&' 时若原 URL
+        # 没有 '?'，会拼出 ".../hook/UUID&timestamp=..." 这种畸形 URL，
+        # urllib 会因首个 '&' 前无 '?' 而抛 unknown url type。
         ts = str(int(time.time()))
-        webhook = "%s%s&timestamp=%s&sign=%s" % (
-            webhook, "&" if "?" in webhook else "?",
-            urllib.parse.quote(ts),
-            urllib.parse.quote(feishu_sign(secret, ts)))
+        sign = feishu_sign(secret, ts)
+        sep = "&" if "?" in webhook else "?"
+        webhook = "%s%stimestamp=%s&sign=%s" % (
+            webhook, sep, urllib.parse.quote(ts), urllib.parse.quote(sign))
 
     card = build_card(report)
     try:
