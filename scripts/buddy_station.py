@@ -58,6 +58,14 @@ BILLING_BASE = "https://www.codebuddy.cn/v2"
 STATUS_PATH = "/billing/meter/checkin-activity-status"      # POST 状态查询（只读）
 CHECKIN_PATH = "/billing/meter/daily-checkin"              # POST 签到（写，幂等）
 
+# 账户资源域（关键：此族接口【不带 /v2 前缀】，加了必然 404）
+# get-user-resource-summary 返回 TotalCredits = 账户总积分（含小数），
+# 这才是客户端「积分余额」显示的值；
+# 而 checkin-activity-status 的 total_credits 是「本期活动累计发放额」
+# （= 连续签到天数 × 每日额度），两者含义不同，切勿混用。
+RESOURCE_BASE = "https://www.codebuddy.cn"
+RESOURCE_SUMMARY_PATH = "/billing/meter/get-user-resource-summary"  # POST 账户资源汇总（只读）
+
 # 旅行域（关键：路径不带 /v2 前缀，带了必 404）
 TRAVEL_BASE = "https://www.workbuddy.cn"
 TRAVEL_STATUS_PATH = "/activity/growth/buddy/travel/status"   # GET  旅行状态
@@ -214,6 +222,42 @@ def fetch_status(token):
         return True, body.get("data") or {}
     return False, {"http": status, "code": (body or {}).get("code"),
                    "msg": (body or {}).get("msg")}
+
+
+def fetch_account_credits(token):
+    """查账户总积分（客户端「积分余额」显示的那个数）。
+
+    接口：POST /billing/meter/get-user-resource-summary（不带 /v2 前缀）
+    返回 TotalCredits 字符串，形如 "3726.02000043"。
+
+    失败返回 None（静默降级，不影响签到结论）。
+    """
+    status, body = http_json(RESOURCE_BASE + RESOURCE_SUMMARY_PATH, token, "POST", {})
+    if status != 200 or not isinstance(body, dict) or body.get("code") != 0:
+        return None
+    data = body.get("data")
+    if not isinstance(data, dict):
+        return None
+    raw = data.get("TotalCredits")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def fmt_credits(v):
+    """积分格式化：整数显示整数，小数保留两位（与客户端一致）。"""
+    if v is None:
+        return "—"
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    if abs(f - round(f)) < 0.005:
+        return str(int(round(f)))
+    return ("%.2f" % f).rstrip("0").rstrip(".")
 
 
 def do_checkin(token):
@@ -419,9 +463,17 @@ def build_card(report):
     lines_ci = [
         "**%s %s**" % (ci_icon, ci_text),
         "· 明细：%s" % ci["message"],
-        "· 积分余额：%s" % (ci.get("credits") if ci.get("credits") is not None else "—"),
-        "· 连续签到：%s 天" % (ci.get("streak") if ci.get("streak") is not None else "—"),
     ]
+    # 账户总积分（与客户端「积分余额」一致，实时取自 resource-summary 接口）
+    if ci.get("account_credits") is not None:
+        lines_ci.append("· 积分余额：%s" % fmt_credits(ci["account_credits"]))
+    elif ci.get("credits") is not None:
+        lines_ci.append("· 积分余额：%s" % fmt_credits(ci["credits"]))
+    # 本期加油站活动累计发放（= 连签天数 × 每日额度），与账户余额口径不同
+    if ci.get("credits") is not None:
+        lines_ci.append("· 本期活动累计：%s 积分" % fmt_credits(ci["credits"]))
+    if ci.get("streak") is not None:
+        lines_ci.append("· 连续签到：%s 天" % ci["streak"])
     # 补充接口已返回但默认未展示的字段（均为实时值，非硬编码）
     if ci.get("today_credit") is not None:
         lines_ci.append("· 今日可得：%s 积分" % ci["today_credit"])
@@ -564,6 +616,9 @@ def main():
             for k, src in mapping.items():
                 if report["checkin"].get(k) is None:
                     report["checkin"][k] = data.get(src)
+
+    # 账户总积分（与客户端显示一致）。失败静默降级，不影响签到结论。
+    report["checkin"]["account_credits"] = fetch_account_credits(token)
 
     # ---- 2. 派猫猫旅行（失败隔离，绝不影响签到结论）----
     try:
