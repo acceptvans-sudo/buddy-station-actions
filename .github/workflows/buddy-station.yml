@@ -18,7 +18,7 @@ concurrency:
 jobs:
   buddy-station:
     name: 签到 + 派猫猫 + 飞书推送
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 10
 
     env:
@@ -52,6 +52,33 @@ jobs:
           # 写入 GITHUB_ENV 供后续步骤以 ${{ env.PYTHON_BIN }} 读取
           echo "PYTHON_BIN=$PY" >> "$GITHUB_ENV"
 
+      - name: 网络连通性诊断
+        if: always()
+        run: |
+          PY="${PYTHON_BIN:-python3}"
+          echo "DNS 解析结果："
+          getent hosts copilot.tencent.com || echo "  copilot.tencent.com 解析失败"
+          getent hosts www.codebuddy.cn || echo "  www.codebuddy.cn 解析失败"
+          getent hosts www.workbuddy.cn || echo "  www.workbuddy.cn 解析失败"
+          echo ""
+          echo "HTTPS 连通性测试（只看能否建连，不发送凭据）："
+          "$PY" - <<'PYEOF'
+          import urllib.request, urllib.error, time
+          for name, url in [
+              ("刷新端点", "https://copilot.tencent.com/v2/plugin/auth/token/refresh"),
+              ("签到域",   "https://www.codebuddy.cn"),
+              ("旅行域",   "https://www.workbuddy.cn"),
+          ]:
+              t = time.time()
+              try:
+                  urllib.request.urlopen(urllib.request.Request(url), timeout=12)
+                  print("  %-8s 可达 (%.0fms)" % (name, (time.time()-t)*1000))
+              except urllib.error.HTTPError as e:
+                  print("  %-8s 可达 HTTP %s (%.0fms)" % (name, e.code, (time.time()-t)*1000))
+              except Exception as e:
+                  print("  %-8s 不可达 → %s: %s" % (name, type(e).__name__, str(e)[:110]))
+          PYEOF
+
       - name: 执行签到与派猫猫（失败隔离）
         id: run
         run: |
@@ -65,7 +92,7 @@ jobs:
           "$PY" scripts/buddy_station.py | tee run.log
           code=${PIPESTATUS[0]}
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
-          echo "结论：退出码 $code（0=成功含幂等，1=签到失败，2=凭据问题）"
+          echo "结论：退出码 $code（0=成功含幂等，1=签到失败，2=凭据或网络问题）"
           exit 0   # 交由后续步骤统一判定，避免运行中途红灯
 
       - name: 上传运行报告

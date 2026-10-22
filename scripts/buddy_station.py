@@ -157,15 +157,26 @@ def acquire_access_token():
         if status == 200 and isinstance(body, dict) and body.get("code") == 0 and at:
             return at, "refresh_token 刷新（%s）" % mask_token(at)
         # 刷新失败：若备了短期令牌则回落
+        # 诊断信息：网络层异常时 body 只会带error 字段，必须单独取出，
+        # 否则真实原因（DNS/超时/TLS）会被吞掉，只看到一个无意义的 HTTP -1。
+        diag = (body or {}).get("error") or ""
+        code = (body or {}).get("code")
+        msg = (body or {}).get("msg") or ""
+        detail = "HTTP %s code=%s msg=%s%s" % (
+            status, code, msg, ("（%s）" % diag) if diag else "")
+
         if fallback_token:
             sys.stderr.write(
-                "[token] 长效令牌刷新失败（HTTP %s code=%s msg=%s），回落到 WB_ACCESS_TOKEN。\n"
-                % (status, (body or {}).get("code"), (body or {}).get("msg")))
+                "[token] 长效令牌刷新失败（%s），回落到 WB_ACCESS_TOKEN。\n" % detail)
             return fallback_token, "WB_ACCESS_TOKEN 直注（回落）"
+
+        hint = ""
+        if status == -1:
+            hint = ("；这通常是网络层问题：GitHub 机房到 copilot.tencent.com 的网络受阻，"
+                    "或该域名被 DNS/防火墙拦截。令牌本身无误时也会出现此码")
         raise RuntimeError(
-            "长效令牌刷新失败：HTTP %s code=%s msg=%s。请在本机重新运行 "
-            "scripts/export_credentials.py 更新 GitHub Secret。"
-            % (status, (body or {}).get("code"), (body or {}).get("msg")))
+            "长效令牌刷新失败：%s%s。请在本机重新运行 "
+            "scripts/export_credentials.py 更新 GitHub Secret。" % (detail, hint))
 
     return fallback_token, "WB_ACCESS_TOKEN 直注"
 
