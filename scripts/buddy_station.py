@@ -155,6 +155,10 @@ def http_json(url, token=None, method="GET", payload=None, extra_headers=None,
 # 令牌获取：长效优先，短期回落
 # ============================================================================
 
+# 令牌健康度（刷新时填充，仅记录时长，不含任何令牌内容）
+TOKEN_HEALTH = {}
+
+
 def acquire_access_token():
     """取得可用的 accessToken。
 
@@ -181,6 +185,14 @@ def acquire_access_token():
         data = body.get("data") if isinstance(body, dict) else None
         at = (data or {}).get("accessToken") or ""
         if status == 200 and isinstance(body, dict) and body.get("code") == 0 and at:
+            # 记录刷新产物的有效期，供健康度提示使用
+            # （实测：refreshExpiresIn 恒为 30 天滑动窗口，accessToken 28 天）
+            TOKEN_HEALTH.update({
+                "refresh_expires_in": (data or {}).get("refreshExpiresIn"),
+                "access_expires_in": (data or {}).get("expiresIn"),
+                "rotated": bool((data or {}).get("refreshToken")
+                                and (data or {}).get("refreshToken") != refresh_token),
+            })
             return at, "refresh_token 刷新（%s）" % mask_token(at)
         # 刷新失败：若备了短期令牌则回落
         # 诊断信息：网络层异常时 body 只会带error 字段，必须单独取出，
@@ -483,6 +495,15 @@ def build_card(report):
         lines_ci.append("· 活动：%s" % ci["theme_name"])
     if ci.get("next_streak_day"):
         lines_ci.append("· 下一个连续奖励：%s 天" % ci["next_streak_day"])
+
+    # 令牌健康度提示（临近失效时提醒续期，避免静默失败）
+    rt_days = TOKEN_HEALTH.get("refresh_expires_in")
+    if rt_days:
+        days = rt_days / 86400.0
+        if days < 7:
+            lines_ci.append("· ⚠️ 长效令牌剩余约 %.0f 天，请在本机重跑 export_credentials.py 续期" % days)
+        else:
+            lines_ci.append("· 令牌有效期：%.0f 天（滑动续期）" % days)
 
     if tv.get("available"):
         tv_title = "🐱 猫猫旅行（%s）" % (tv.get("state_text") or "状态未知")
