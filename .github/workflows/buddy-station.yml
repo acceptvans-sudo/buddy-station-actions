@@ -1,0 +1,80 @@
+name: Buddy 加油站 · 每日签到 + 派猫猫
+
+on:
+  schedule:
+    # 每天 01:11 UTC 触发（北京时间 09:11）。
+    # 刻意避开整点：整点是 GitHub Actions 定时任务高峰，排队延迟可达数分钟。
+    - cron: "11 1 * * *"
+  workflow_dispatch: # 允许手动触发，便于首次验证与补跑
+
+permissions:
+  contents: read
+
+concurrency:
+  # 防止上一次的旅行流程未结束就叠加运行（同一时间只跑一个）
+  group: buddy-station-daily
+  cancel-in-progress: false
+
+jobs:
+  buddy-station:
+    name: 签到 + 派猫猫 + 飞书推送
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      # 凭据一律来自仓库 Secret，绝不写进仓库或日志
+      WB_REFRESH_TOKEN: ${{ secrets.WB_REFRESH_TOKEN }}
+      WB_ACCESS_TOKEN: ${{ secrets.WB_ACCESS_TOKEN }}
+      FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+      FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 定位 Python 解释器（不硬编码版本号）
+        id: py
+        run: |
+          set -euo pipefail
+          PY=""
+          for cand in python3 python; do
+            if command -v "$cand" >/dev/null 2>&1; then
+              PY="$(command -v "$cand")"
+              break
+            fi
+          done
+          if [ -z "$PY" ]; then
+            echo "::error::未找到 Python 解释器"
+            exit 1
+          fi
+          echo "解释器路径：$PY"
+          "$PY" -c 'import sys; assert sys.version_info >= (3,8), "需要 Python 3.8+"; print("版本检查通过：" + sys.version.split()[0])'
+          echo "PYTHON_BIN=$PY" >> "$GITHUB_ENV"
+
+      - name: 执行签到与派猫猫（失败隔离）
+        id: run
+        run: |
+          set -uo pipefail
+          "${{ steps.py.outputs.PYTHON_BIN }}" scripts/buddy_station.py | tee run.log
+          code=${PIPESTATUS[0]}
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          echo "结论：退出码 $code（0=成功含幂等，1=签到失败，2=凭据问题）"
+          exit 0   # 交由后续步骤统一判定，避免运行中途红灯
+
+      - name: 上传运行报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buddy-station-report-${{ github.run_id }}
+          path: run.log
+          retention-days: 30
+
+      - name: 判定整体结论（签到为准）
+        run: |
+          code="${{ steps.run.outputs.exit_code }}"
+          case "$code" in
+            0) echo "✅ 签到成功（猫猫部分结果见上方日志与飞书卡片）" ;;
+            1) echo "::error::❌ 签到失败，请检查令牌是否过期或接口状态"; exit 1 ;;
+            2) echo "::error::❌ 凭据缺失或刷新失败，请在本机重新运行 export_credentials.py"; exit 1 ;;
+            *) echo "::error::未知退出码 $code"; exit 1 ;;
+          esac

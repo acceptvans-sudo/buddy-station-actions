@@ -1,0 +1,21 @@
+# 凭据与本地环境
+.env
+*.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 运行产物
+run.log
+*.log
+result.json
