@@ -135,8 +135,18 @@ def acquire_access_token():
     返回 (token, source_desc)。失败抛 RuntimeError。
     令牌不写入任何输出，仅返回给调用方在内存中使用。
     """
-    refresh_token = os.environ.get("WB_REFRESH_TOKEN", "").strip()
-    fallback_token = os.environ.get("WB_ACCESS_TOKEN", "").strip()
+    #关键：Secret 常常在粘贴时带入换行/空格/CR，http.client 会因
+    # 请求头含非法字符抛 "Invalid header value"。这里做一次彻底清洗，
+    # 只保留令牌本体的合法字符，粘贴时产生的杂质一律剔除。
+    def sanitize(v):
+        # 去BOM 与各类空白字符（含内部换行/制表/不换行空格/中文全角空格）
+        v = v.replace("﻿", "")
+        v = "".join(v.split())
+        # 仅保留 base64url / JWT 允许的字符集
+        return "".join(ch for ch in v if ch.isalnum() or ch in "-_.~+/=")
+
+    refresh_token = sanitize(os.environ.get("WB_REFRESH_TOKEN", ""))
+    fallback_token = sanitize(os.environ.get("WB_ACCESS_TOKEN", ""))
 
     if not refresh_token and not fallback_token:
         raise RuntimeError(
@@ -172,8 +182,12 @@ def acquire_access_token():
 
         hint = ""
         if status == -1:
-            hint = ("；这通常是网络层问题：GitHub 机房到 copilot.tencent.com 的网络受阻，"
-                    "或该域名被 DNS/防火墙拦截。令牌本身无误时也会出现此码")
+            if "Invalid header value" in diag:
+                hint = ("；请求头被拒，通常是 Secret 粘贴时带入了换行/空格。"
+                        "请重新配置 WB_REFRESH_TOKEN，确保粘贴为单行纯文本")
+            else:
+                hint = ("；这通常是网络层问题：GitHub 机房到 copilot.tencent.com 的网络受阻，"
+                        "或该域名被 DNS/防火墙拦截。令牌本身无误时也会出现此码")
         raise RuntimeError(
             "长效令牌刷新失败：%s%s。请在本机重新运行 "
             "scripts/export_credentials.py 更新 GitHub Secret。" % (detail, hint))
