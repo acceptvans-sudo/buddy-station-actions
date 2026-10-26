@@ -20,9 +20,8 @@ on:
 
 permissions:
   contents: read
-  # 令牌回写需要写仓库 Secret。注意：GITHUB_TOKEN 只能更新本仓库的
-  # secret（不能新增），因此首次配置仍需在本机执行一次 export_credentials.py。
-  secrets: write
+  # 注意：GITHUB_TOKEN 没有 secrets 权限（secrets 不是合法的 permissions 键），
+  # 无法写回仓库 Secret。令牌回写改用专用 PAT ——见回写步骤的说明。
 
 concurrency:
   # 防止上一次的旅行流程未结束就叠加运行（同一时间只跑一个）
@@ -114,7 +113,9 @@ jobs:
       - name: 回写轮换后的长效令牌（保持链路自续）
         if: always() && github.event_name == 'schedule'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 令牌回写需要一个能写仓库 Secret 的 PAT（GITHUB_TOKEN 无此权限）。
+          # 未配置时该步骤自动跳过，不影响签到；届时需在本机重新导出令牌。
+          GH_PAT: ${{ secrets.GH_PAT }}
           ROTATED: ${{ runner.temp }}/rotated_token
         run: |
           # 长效令牌的 JWT exp 在签发时固定 +30 天，服务端不因使用而延长。
@@ -124,20 +125,27 @@ jobs:
           # 令牌不打印、不进日志：仅经 stdin 管道交给 gh secret set。
           if [ ! -s "$ROTATED" ]; then
             echo "未产生新令牌（可能使用了回落令牌），跳过回写"
+            rm -f "$ROTATED"
+            exit 0
+          fi
+          if [ -z "$GH_PAT" ]; then
+            echo "::notice::未配置 GH_PAT，跳过令牌回写。签到不受影响；"
+            echo "::notice::如需自动续期，请在本机运行 export_credentials.py 重新导出令牌，"
+            echo "::notice::并按 README 配置 GH_PAT（fine-grained PAT，权限 Secrets: Read and write）。"
+            rm -f "$ROTATED"
             exit 0
           fi
           if ! command -v gh >/dev/null 2>&1; then
             echo "::warning::未找到 gh CLI，跳过令牌回写（不影响本次签到）"
+            rm -f "$ROTATED"
             exit 0
           fi
-          # 仓库级 secret 需要 admin 权限；GITHUB_TOKEN 对本仓库有写权限时可用
-          if gh secret set WB_REFRESH_TOKEN --body "$(cat "$ROTATED")" 2>/tmp/gh_err.txt; then
+          if GH_TOKEN="$GH_PAT" gh secret set WB_REFRESH_TOKEN --repo "$GITHUB_REPOSITORY" --body "$(cat "$ROTATED")" 2>/tmp/gh_err.txt; then
             echo "✅ 长效令牌已回写，有效期自动续期"
-            rm -f "$ROTATED"
           else
             echo "::warning::令牌回写失败（不影响本次签到）：$(head -c 200 /tmp/gh_err.txt)"
           fi
-          # 无论如何清掉临时文件
+          # 无论成败都清掉临时文件，避免令牌残留
           rm -f "$ROTATED" /tmp/gh_err.txt
 
       - name: 上传运行报告
