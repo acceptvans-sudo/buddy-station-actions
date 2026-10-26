@@ -111,7 +111,7 @@ jobs:
           exit 0   # 交由后续步骤统一判定，避免运行中途红灯
 
       - name: 回写轮换后的长效令牌（保持链路自续）
-        if: always() && github.event_name == 'schedule'
+        if: always()
         env:
           # 令牌回写需要一个能写仓库 Secret 的 PAT（GITHUB_TOKEN 无此权限）。
           # 未配置时该步骤自动跳过，不影响签到；届时需在本机重新导出令牌。
