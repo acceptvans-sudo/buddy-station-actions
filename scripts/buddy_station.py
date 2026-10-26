@@ -496,6 +496,14 @@ def build_card(report):
     if ci.get("next_streak_day"):
         lines_ci.append("· 下一个连续奖励：%s 天" % ci["next_streak_day"])
 
+    # 近期签到日期（后端权威记录）。客户端日历色块反映的是「本机客户端
+    # 活跃日」，与后端签到记录并非同一套判定 —— 云端签到成功时，
+    # 本机无对话活动，客户端日历可能仍显示为灰色。此处列出后端记录，
+    # 避免把「日历灰」误读成「没签到」。
+    recent = ci.get("recent_dates") or []
+    if recent:
+        lines_ci.append("· 近期签到：%s" % "、".join(recent))
+
     # 令牌健康度提示（临近失效时提醒续期，避免静默失败）
     rt_days = TOKEN_HEALTH.get("refresh_expires_in")
     if rt_days:
@@ -622,7 +630,7 @@ def main():
     # 补齐展示字段（签到写接口不回传余额等数据，统一从状态查询取实时值）
     # 只查一次：一次性补齐所有展示字段
     need = ("credits", "streak", "today_credit", "daily_credit",
-            "theme_name", "next_streak_day")
+            "theme_name", "next_streak_day", "recent_dates")
     if any(report["checkin"].get(k) is None for k in need):
         ok, data = fetch_status(token)
         if ok:
@@ -637,6 +645,10 @@ def main():
             for k, src in mapping.items():
                 if report["checkin"].get(k) is None:
                     report["checkin"][k] = data.get(src)
+            # 近期签到日期（后端权威记录，取最近 7 天，倒序）
+            dates = data.get("checkin_dates") or []
+            if dates:
+                report["checkin"]["recent_dates"] = sorted(dates, reverse=True)[:7]
 
     # 账户总积分（与客户端显示一致）。失败静默降级，不影响签到结论。
     report["checkin"]["account_credits"] = fetch_account_credits(token)
