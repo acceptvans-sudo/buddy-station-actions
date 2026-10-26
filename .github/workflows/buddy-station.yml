@@ -20,6 +20,9 @@ on:
 
 permissions:
   contents: read
+  # 令牌回写需要写仓库 Secret。注意：GITHUB_TOKEN 只能更新本仓库的
+  # secret（不能新增），因此首次配置仍需在本机执行一次 export_credentials.py。
+  secrets: write
 
 concurrency:
   # 防止上一次的旅行流程未结束就叠加运行（同一时间只跑一个）
@@ -92,6 +95,8 @@ jobs:
 
       - name: 执行签到与派猫猫（失败隔离）
         id: run
+        env:
+          WB_ROTATED_TOKEN_FILE: ${{ runner.temp }}/rotated_token
         run: |
           set -uo pipefail
           PY="${PYTHON_BIN:-}"
@@ -105,6 +110,35 @@ jobs:
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           echo "结论：退出码 $code（0=成功含幂等，1=签到失败，2=凭据或网络问题）"
           exit 0   # 交由后续步骤统一判定，避免运行中途红灯
+
+      - name: 回写轮换后的长效令牌（保持链路自续）
+        if: always() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ROTATED: ${{ runner.temp }}/rotated_token
+        run: |
+          # 长效令牌的 JWT exp 在签发时固定 +30 天，服务端不因使用而延长。
+          # 本步骤把每次刷新签发出的新令牌写回 Secret，使有效期不断滚动，
+          # 从此无需依赖本机、也无需人工续期。
+          #
+          # 令牌不打印、不进日志：仅经 stdin 管道交给 gh secret set。
+          if [ ! -s "$ROTATED" ]; then
+            echo "未产生新令牌（可能使用了回落令牌），跳过回写"
+            exit 0
+          fi
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "::warning::未找到 gh CLI，跳过令牌回写（不影响本次签到）"
+            exit 0
+          fi
+          # 仓库级 secret 需要 admin 权限；GITHUB_TOKEN 对本仓库有写权限时可用
+          if gh secret set WB_REFRESH_TOKEN --body "$(cat "$ROTATED")" 2>/tmp/gh_err.txt; then
+            echo "✅ 长效令牌已回写，有效期自动续期"
+            rm -f "$ROTATED"
+          else
+            echo "::warning::令牌回写失败（不影响本次签到）：$(head -c 200 /tmp/gh_err.txt)"
+          fi
+          # 无论如何清掉临时文件
+          rm -f "$ROTATED" /tmp/gh_err.txt
 
       - name: 上传运行报告
         if: always()

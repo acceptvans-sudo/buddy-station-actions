@@ -158,6 +158,32 @@ def http_json(url, token=None, method="GET", payload=None, extra_headers=None,
 # 令牌健康度（刷新时填充，仅记录时长，不含任何令牌内容）
 TOKEN_HEALTH = {}
 
+# 轮换出的新令牌落地路径（供 workflow 步骤回写 Secret 使用）
+ROTATED_TOKEN_FILE = os.environ.get("WB_ROTATED_TOKEN_FILE", "").strip()
+
+
+def save_rotated_token(new_rt):
+    """把刷新签发出的新 refresh_token 落地，供后续步骤回写 Secret。
+
+    为什么需要回写：长效令牌的 JWT exp 在签发时固定为 +30 天，服务端不会
+    因为「被使用」而延长。因此 Secret 里那个旧令牌到了 exp 就无法再刷新，
+    必须把每次拿到的新令牌回写进去，链路才能无限延续。
+
+    安全：仅在显式设置 WB_ROTATED_TOKEN_FILE 时才写盘；文件权限 0600；
+    内容不打印到任何输出。
+    """
+    if not new_rt or not ROTATED_TOKEN_FILE:
+        return
+    try:
+        with open(ROTATED_TOKEN_FILE, "w", encoding="utf-8") as f:
+            f.write(new_rt)
+        try:
+            os.chmod(ROTATED_TOKEN_FILE, 0o600)
+        except Exception:
+            pass
+    except Exception:
+        pass  # 落地失败不影响主流程
+
 
 def acquire_access_token():
     """取得可用的 accessToken。
@@ -185,14 +211,18 @@ def acquire_access_token():
         data = body.get("data") if isinstance(body, dict) else None
         at = (data or {}).get("accessToken") or ""
         if status == 200 and isinstance(body, dict) and body.get("code") == 0 and at:
-            # 记录刷新产物的有效期，供健康度提示使用
-            # （实测：refreshExpiresIn 恒为 30 天滑动窗口，accessToken 28 天）
+            # 记录刷新产物的有效期，供健康度提示使用。
+            # 实测：长效令牌的 JWT exp 在【签发时固定为 +30 天】，
+            # 服务端不会因「被使用」而延长它 —— 即所谓滑动续期并不成立。
+            # 每次刷新会签发一个 exp 更晚的新 refresh_token，若不回写，
+            # Secret 里那个旧令牌到期后链路就会断（见 save_rotated_token）。
             TOKEN_HEALTH.update({
                 "refresh_expires_in": (data or {}).get("refreshExpiresIn"),
                 "access_expires_in": (data or {}).get("expiresIn"),
                 "rotated": bool((data or {}).get("refreshToken")
                                 and (data or {}).get("refreshToken") != refresh_token),
             })
+            save_rotated_token((data or {}).get("refreshToken"))
             return at, "refresh_token 刷新（%s）" % mask_token(at)
         # 刷新失败：若备了短期令牌则回落
         # 诊断信息：网络层异常时 body 只会带error 字段，必须单独取出，
@@ -511,7 +541,7 @@ def build_card(report):
         if days < 7:
             lines_ci.append("· ⚠️ 长效令牌剩余约 %.0f 天，请在本机重跑 export_credentials.py 续期" % days)
         else:
-            lines_ci.append("· 令牌有效期：%.0f 天（滑动续期）" % days)
+            lines_ci.append("· 令牌有效期：%.0f 天（每次运行自动续期）" % days)
 
     if tv.get("available"):
         tv_title = "🐱 猫猫旅行（%s）" % (tv.get("state_text") or "状态未知")
